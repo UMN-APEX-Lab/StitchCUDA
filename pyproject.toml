@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stitchcuda"
+version = "0.1.0"
+description = "Fixed planner-coder-verifier workflow for KernelBench CUDA optimization."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.0.0",
+]
+
+[project.scripts]
+stitchcuda = "stitchcuda.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["stitchcuda*"]
