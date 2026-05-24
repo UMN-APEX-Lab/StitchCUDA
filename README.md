@@ -1,28 +1,38 @@
 # StitchCUDA
 
-StitchCUDA is a fixed `planner -> coder -> verifier` workflow for KernelBench
-CUDA optimization tasks. It is designed as a small, reproducible research
-workflow: the planner writes a strategy, the coder emits a complete KernelBench
-`ModelNew` solution, and the verifier evaluates correctness and performance with
-KernelBench in an isolated subprocess.
+StitchCUDA is an open-source multi-agent framework for automated end-to-end
+CUDA program generation and optimization. It is the agent framework component
+associated with an ICML 2026 paper on automated CUDA programming.
 
-StitchCUDA is not a general tool-calling agent. It follows a fixed staged loop,
-with bounded replanning when verifier evidence shows that the current plan is no
-longer useful.
+The system decomposes GPU programming into three cooperating agents:
 
-## Repository Layout
+- **Planner**: reasons about the full program and chooses an optimization plan.
+- **Coder**: implements or repairs CUDA/Python code for the current task.
+- **Verifier**: checks correctness, measures performance, and returns structured
+  feedback to drive further optimization.
+
+Paper status: **accepted to ICML 2026**.
+
+- Paper: <https://arxiv.org/abs/2603.02637>
+- ICML 2026 listing: <https://icml.cc/Downloads/2026>
+
+This repository provides the KernelBench-based agent framework: a fixed
+`planner -> coder -> verifier` workflow with verifier-driven repair,
+optimization, and replanning.
+
+## What Is Included
 
 ```text
 stitchcuda/                 Python package
-  cli.py                    CLI entry point
-  workflow.py               planner-coder-verifier loop and replan logic
-  planner.py                initial planning and replanning
-  coder.py                  candidate generation and repair
-  verifier.py               isolated KernelBench evaluator
+  cli.py                    Command-line entry point
+  workflow.py               Fixed planner-coder-verifier loop and replan logic
+  planner.py                Initial planning and replanning agents
+  coder.py                  Candidate generation and repair agent
+  verifier.py               Isolated KernelBench evaluator
   kernelbench.py            KernelBench adapter and prompt construction
-prompts/                    editable prompt templates
+prompts/                    Editable prompt templates
 third_party/KernelBench/    KernelBench git submodule
-runs/                       local run outputs, ignored by git
+runs/                       Local run outputs, ignored by git
 ```
 
 ## Clone
@@ -40,24 +50,25 @@ If you already cloned without submodules:
 git submodule update --init --recursive
 ```
 
-By default StitchCUDA uses the bundled `third_party/KernelBench` submodule. You
-can override this with `--kernelbench-root` or `KERNELBENCH_ROOT`.
+StitchCUDA uses `third_party/KernelBench` by default. To use another KernelBench
+checkout, pass `--kernelbench-root /path/to/KernelBench` or set
+`KERNELBENCH_ROOT`.
 
 ## Requirements
 
 - Linux with an NVIDIA GPU.
 - CUDA toolkit with `nvcc` available on `PATH`.
-- Python 3.10 is recommended because KernelBench currently pins Python 3.10 in
-  its own package metadata.
-- PyTorch with CUDA support installed for your driver/toolkit.
-- An OpenAI-compatible chat completions endpoint, or an OpenAI API key.
+- Python 3.10 recommended. KernelBench currently pins Python 3.10 in its package
+  metadata.
+- CUDA-enabled PyTorch compatible with your driver/toolkit.
+- An OpenAI-compatible chat-completions endpoint, or an OpenAI API key.
 
-KernelBench may require additional optional GPU packages for some backends. For
-basic CUDA KernelBench runs, install the KernelBench package from the submodule.
+KernelBench may require extra optional packages for non-CUDA backends. The
+default StitchCUDA path uses KernelBench's CUDA backend.
 
 ## Environment Setup
 
-Create an environment and install the two packages in editable mode:
+Create an environment and install StitchCUDA plus the KernelBench submodule:
 
 ```bash
 python3.10 -m venv .venv
@@ -68,9 +79,9 @@ pip install -e .
 pip install -e third_party/KernelBench
 ```
 
-If your environment already has a CUDA-enabled PyTorch build, keep it. Otherwise
-install the PyTorch wheel that matches your CUDA/driver stack before running
-KernelBench evaluation.
+Install a CUDA-enabled PyTorch build if your environment does not already have
+one. Follow the official PyTorch installation matrix for your CUDA toolkit and
+driver.
 
 For a hosted OpenAI-compatible endpoint:
 
@@ -78,8 +89,8 @@ For a hosted OpenAI-compatible endpoint:
 export OPENAI_API_KEY=<your_api_key>
 ```
 
-For a local OpenAI-compatible server, pass `--api-base` and use any placeholder
-API key if your server requires one.
+For a local OpenAI-compatible server, pass `--api-base`. If the server does not
+enforce authentication, any placeholder API key is sufficient.
 
 ## Quick Start
 
@@ -107,9 +118,9 @@ Example architecture values:
 ```
 
 `--gpu-arch` is passed to `kernelbench.utils.set_gpu_arch`, so it must be a
-KernelBench-recognized architecture name. `--target-sm` is prompt context for the
-planner and coder. If `--target-sm` is omitted, StitchCUDA derives it from
-`nvidia-smi` for the selected device when possible.
+KernelBench-recognized architecture name. `--target-sm` is prompt context for
+hardware-aware planning and coding. If `--target-sm` is omitted, StitchCUDA
+derives it from `nvidia-smi` for the selected device when possible.
 
 Run several problems by repeating `--problem-id`:
 
@@ -127,23 +138,22 @@ python -m stitchcuda \
 Use `--max-problems N` to run the first `N` problems when `--problem-id` is not
 specified.
 
-## Workflow Details
+## Workflow
 
-The fixed loop is:
+The current open-source workflow is deterministic:
 
-1. `planner`: reads the KernelBench reference model and hardware context, then
-   returns a structured plan.
-2. `coder`: receives the KernelBench prompt plus the current plan and writes one
-   complete Python solution defining `ModelNew`.
-3. `verifier`: runs `kernelbench.eval.eval_kernel_against_ref` in a fresh Python
-   subprocess to isolate CUDA crashes and context poisoning.
-4. `coder` repair/optimization: if the candidate fails or misses the target,
-   verifier output is returned to coder.
-5. `planner` replan: if repeated failures or stagnant correct candidates show
-   that the plan is stale, the planner receives the verifier history and emits a
-   revised plan.
+1. **Plan**: read the KernelBench reference program and hardware context, then
+   produce a structured optimization plan.
+2. **Code**: generate a full KernelBench-compatible Python solution defining
+   `ModelNew`.
+3. **Verify**: run KernelBench correctness and performance evaluation in a fresh
+   Python subprocess to avoid CUDA context poisoning after failures.
+4. **Repair or optimize**: if the candidate fails or misses the target speedup,
+   return verifier feedback to the coder.
+5. **Replan**: if failures repeat or correct candidates stagnate below the
+   target, ask the planner for a revised strategy.
 
-Relevant controls:
+Useful controls:
 
 ```text
 --max-attempts
@@ -183,14 +193,26 @@ Important files:
 
 Prompt templates live in `prompts/`.
 
-Do not hardcode local paths, user names, model endpoints, or GPU architectures in
-prompt files. Runtime context such as GPU name, target SM, and KernelBench task
-metadata is injected by the workflow.
+Do not hardcode local paths, personal information, model endpoints, or GPU
+architectures in prompts. Runtime context such as GPU name, target SM, model
+name, and KernelBench task metadata is injected by the workflow.
+
+## Citation
+
+```bibtex
+@inproceedings{li2026stitchcuda,
+  title     = {StitchCUDA: An Automated Multi-Agents End-to-End GPU Programming Framework with Rubric-based Agentic Reinforcement Learning},
+  author    = {Li, Shiyang and Zhang, Zijian and Chen, Winson and Luo, Yuebo and Hong, Mingyi and Ding, Caiwen},
+  booktitle = {International Conference on Machine Learning (ICML)},
+  year      = {2026}
+}
+```
+
+The arXiv version is available as `arXiv:2603.02637`.
 
 ## Notes
 
-- KernelBench is included as a git submodule, not vendored source.
+- KernelBench is included as a git submodule, not copied into this repository.
 - The default KernelBench root is `third_party/KernelBench`.
-- To use an external KernelBench checkout, pass `--kernelbench-root /path/to/KernelBench`.
-- Some generated CUDA candidates may compile but be slower than PyTorch. A correct
-  but slow candidate validates the pipeline, not model quality.
+- Generated candidates may compile and pass correctness but still be slower than
+  PyTorch. That validates the workflow path, not necessarily model quality.
