@@ -7,6 +7,7 @@ name = "stitchcuda"
 version = "0.1.0"
 description = "Fixed planner-coder-verifier workflow for KernelBench CUDA optimization."
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
     "openai>=1.0.0",
