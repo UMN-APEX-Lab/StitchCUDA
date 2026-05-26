@@ -23,11 +23,13 @@ optimization, and replanning.
 ```text
 stitchcuda/                 Python package
   cli.py                    Command-line entry point
+  events.py                 Workflow event sink protocol for live/quiet UIs
   workflow.py               Fixed planner-coder-verifier loop and replan logic
   planner.py                Initial planning and replanning agents
   coder.py                  Candidate generation and repair agent
   verifier.py               Isolated KernelBench evaluator
   kernelbench.py            KernelBench adapter and prompt construction
+  tui/                      Typer/Rich terminal frontend and run browser
 prompts/                    Editable prompt templates
 third_party/KernelBench/    KernelBench git submodule
 runs/                       Local run outputs, ignored by git
@@ -135,6 +137,59 @@ python -m stitchcuda \
 
 Use `--max-problems N` to run the first `N` problems when `--problem-id` is not
 specified.
+
+## Interactive CLI
+
+StitchCUDA ships with a Typer-based command line that wraps the same workflow
+in interactive subcommands. The legacy form above (`python -m stitchcuda
+--level ... --problem-id ...`) keeps working unchanged; under the hood the
+flags are routed to the `run` subcommand.
+
+```text
+stitchcuda                       # show top-level help
+stitchcuda doctor                # check CUDA toolchain, KernelBench, credentials
+stitchcuda run                   # interactive config editor (problems, model, GPU, attempts, ...)
+stitchcuda run --profile demo    # launch with parameters from a saved profile
+stitchcuda run --profile demo --level 2 --model gpt-4o-mini
+                                 # any flag overrides the profile per-field
+stitchcuda run --no-live         # disable the live Rich dashboard (CI mode)
+
+stitchcuda runs list             # table of every run under runs/
+stitchcuda runs show RUN_DIR     # configuration, attempts, and best result
+stitchcuda runs show RUN_DIR --solution
+                                 # also print best_solution.py with highlighting
+stitchcuda runs diff RUN_A RUN_B # side-by-side comparison
+
+stitchcuda prompts list          # *.md templates under prompts/
+stitchcuda prompts show planner  # render a template as Markdown
+stitchcuda prompts edit planner  # open the template in $EDITOR
+
+stitchcuda profile list          # saved run profiles (~/.config/stitchcuda/profiles.toml)
+stitchcuda profile show demo
+stitchcuda profile save demo --from-run runs/stitchcuda_L1_P1_20260524_174905
+stitchcuda profile rm demo
+```
+
+The `run` editor shows the full configuration first, lets you jump directly to
+the section you want to change, and offers to save the final settings as a
+named profile. The second invocation can simply be `stitchcuda run --profile
+<name>`. API keys are never written to the profile file — they are always read
+from `--api-key`, `$OPENAI_API_KEY`, or (for local OpenAI-compatible servers)
+a dummy placeholder.
+
+Press `Esc` inside a section to return to the previous menu. The model section
+can configure a local OpenAI-compatible endpoint such as
+`http://localhost:8002/v1` and choose from its `/models` response.
+
+During a `run`, an interactive terminal will show a live dashboard
+(planner/coder/verifier stage, attempt history, best speedup so far). The
+dashboard auto-disables when stdout is not a TTY, and can be forced off with
+`--no-live`. Color is suppressed when the `NO_COLOR` environment variable is
+set.
+
+Terminal UI output avoids printing local absolute paths where possible:
+repository paths are displayed relative to the project root, and home-directory
+paths are displayed with `~`.
 
 ## Workflow
 

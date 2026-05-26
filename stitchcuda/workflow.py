@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .coder import CoderAgent
+from .events import EventSink, NullSink
 from .kernelbench import build_kernelbench_prompt, load_problem
 from .llm import LLMConfig, OpenAIChatClient
 from .planner import PlannerAgent
@@ -49,8 +50,9 @@ class FixedWorkflowConfig:
 class StitchCUDAWorkflow:
     """Fixed KernelBench planner -> coder -> verifier workflow."""
 
-    def __init__(self, config: FixedWorkflowConfig):
+    def __init__(self, config: FixedWorkflowConfig, *, events: EventSink | None = None):
         self.config = config
+        self.events: EventSink = events or NullSink()
         llm = OpenAIChatClient(
             LLMConfig(
                 model=config.model,
@@ -82,11 +84,21 @@ class StitchCUDAWorkflow:
         )
         run_dir = self._create_run_dir(problem)
         hardware = self._hardware_summary()
+        config_snapshot = _config_to_json(cfg)
 
         (run_dir / "reference.py").write_text(problem.reference_code, encoding="utf-8")
         _save_json(run_dir / "problem.json", problem.to_dict())
         _save_json(run_dir / "hardware.json", hardware)
-        _save_json(run_dir / "config.json", _config_to_json(cfg))
+        _save_json(run_dir / "config.json", config_snapshot)
+
+        self.events.on_run_start(
+            level=cfg.level,
+            problem_id=cfg.problem_id,
+            problem_name=problem.name,
+            run_dir=run_dir,
+            hardware=hardware,
+            config=config_snapshot,
+        )
 
         kb_prompt = build_kernelbench_prompt(
             problem.reference_code,
@@ -98,8 +110,10 @@ class StitchCUDAWorkflow:
         )
         (run_dir / "kernelbench_prompt.txt").write_text(kb_prompt, encoding="utf-8")
 
-        plan = self.planner.run(problem, hardware_summary=hardware)
         plan_version = 0
+        self.events.on_plan_start(version=plan_version)
+        plan = self.planner.run(problem, hardware_summary=hardware)
+        self.events.on_plan_done(version=plan_version, summary=plan.summary)
         _save_json(run_dir / f"plan_v{plan_version:02d}.json", plan.to_dict())
         _save_json(run_dir / "plan.json", plan.to_dict())
 
@@ -112,6 +126,9 @@ class StitchCUDAWorkflow:
 
         for attempt_idx in range(max(1, cfg.max_attempts)):
             stage = "draft" if attempt_idx == 0 else _next_stage(previous_result, cfg.target_speedup)
+            self.events.on_attempt_start(attempt=attempt_idx, stage=stage, plan_version=plan_version)
+
+            self.events.on_code_start(attempt=attempt_idx)
             if attempt_idx == 0:
                 code = self.coder.draft(
                     problem,
@@ -129,15 +146,19 @@ class StitchCUDAWorkflow:
                     hardware_summary=hardware,
                     target_speedup=cfg.target_speedup,
                 )
+            self.events.on_code_done(attempt=attempt_idx, code_chars=len(code))
 
             solution_path = run_dir / f"attempt_{attempt_idx:02d}_{stage}.py"
             solution_path.write_text(code, encoding="utf-8")
+
+            self.events.on_verify_start(attempt=attempt_idx)
             result = self.verifier.verify(
                 problem,
                 code_path=solution_path,
                 output_dir=run_dir,
                 attempt=attempt_idx,
             )
+
             attempt = CandidateAttempt(
                 attempt=attempt_idx,
                 plan_version=plan_version,
@@ -148,9 +169,23 @@ class StitchCUDAWorkflow:
             attempts.append(attempt)
             _save_json(run_dir / f"attempt_{attempt_idx:02d}_summary.json", attempt.to_dict())
 
-            if result.correct and (best is None or result.speedup > best.result.speedup):
+            # Compute is_best *before* mutating ``best`` so the event reflects
+            # the decision and downstream UI can flag the row immediately.
+            is_best = result.correct and (best is None or result.speedup > best.result.speedup)
+            if is_best:
                 best = attempt
                 shutil.copy2(solution_path, run_dir / "best_solution.py")
+
+            self.events.on_verify_done(
+                attempt=attempt_idx,
+                compiled=result.compiled,
+                correct=result.correct,
+                speedup=result.speedup,
+                runtime_us=result.runtime_us,
+                ref_runtime_us=result.ref_runtime_us,
+                error=result.error,
+                is_best=is_best,
+            )
 
             if _meets_target(result, cfg.target_speedup):
                 stop_reason = "target_reached"
@@ -165,6 +200,7 @@ class StitchCUDAWorkflow:
             if replan_reason and replan_count < max(0, cfg.max_replans) and attempt_idx < max(1, cfg.max_attempts) - 1:
                 replan_count += 1
                 plan_version += 1
+                self.events.on_plan_start(version=plan_version, reason=replan_reason)
                 plan = self.planner.replan(
                     problem,
                     hardware_summary=hardware,
@@ -172,6 +208,7 @@ class StitchCUDAWorkflow:
                     attempts=attempts,
                     reason=replan_reason,
                 )
+                self.events.on_plan_done(version=plan_version, summary=plan.summary)
                 _save_json(run_dir / f"plan_v{plan_version:02d}.json", plan.to_dict())
                 _save_json(run_dir / "plan.json", plan.to_dict())
 
@@ -187,6 +224,11 @@ class StitchCUDAWorkflow:
             "attempts": [attempt.to_dict() for attempt in attempts],
         }
         _save_json(run_dir / "summary.json", summary)
+        self.events.on_run_end(
+            stop_reason=stop_reason,
+            best_attempt=best.attempt if best else None,
+            best_speedup=best.result.speedup if best else 0.0,
+        )
         return summary
 
     def _create_run_dir(self, problem: KernelBenchProblem) -> Path:

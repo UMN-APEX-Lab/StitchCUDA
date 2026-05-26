@@ -1,0 +1,31 @@
+# Runtime outputs
+runs/
+logs/
+profiles/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+
+# Local environments and secrets
+.env
+.venv/
+venv/
+env/
+
+# Native/build artifacts
+build/
+dist/
+*.so
+*.o
+*.a
+
+# Editor and OS files
+.DS_Store
+.vscode/
+.idea/
