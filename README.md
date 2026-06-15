@@ -1,6 +1,6 @@
 # StitchCUDA
 
-StitchCUDA is a source-available, noncommercial multi-agent framework for
+StitchCUDA is a multi-agent framework for
 automated end-to-end CUDA program generation and optimization. It is the agent
 framework component associated with the ICML 2026 paper **StitchCUDA: An
 Automated Multi-Agents End-to-End GPU Programming Framework with Rubric-based
