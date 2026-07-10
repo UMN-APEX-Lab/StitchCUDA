@@ -12,8 +12,8 @@ Target hardware:
 Previous plan:
 {{previous_plan_json}}
 
-Verifier history:
-{{attempts_json}}
+Compressed attempt memory:
+{{attempt_memory_context}}
 
 Reference PyTorch model:
 ```python
@@ -29,6 +29,7 @@ Return only one JSON object with this schema:
   "kernelbench_constraints": ["constraints the coder must obey"]
 }
 
-The revised plan must explicitly respond to the verifier history. Do not repeat a
-failed strategy unless the verifier feedback shows the failure was only a small
-implementation bug.
+The revised plan must explicitly respond to the error fingerprints, failed
+strategy summaries, and best correct candidate in attempt memory. Do not repeat
+a failed strategy unless the compressed evidence shows the failure was only a
+small implementation bug.

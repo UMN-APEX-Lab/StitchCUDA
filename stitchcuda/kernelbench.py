@@ -11,21 +11,31 @@ from .types import KernelBenchProblem
 
 def safe_glue_prompt_suffix(*, target_arch_context: str = "") -> str:
     target_line = (
-        f"7. Target architecture context for this run: {target_arch_context}."
+        f"10. Target architecture context for this run: {target_arch_context}."
         if target_arch_context
-        else "7. Use the evaluator-provided target architecture for this run."
+        else "10. Use the evaluator-provided target architecture for this run."
     )
     return f"""
 Implementation constraints for this KernelBench task:
 
 1. Return one complete Python file defining ModelNew.
-2. If you use a custom CUDA extension, build it with torch.utils.cpp_extension.load_inline.
-3. Do not use torch.utils.cpp_extension.load.
-4. Do not write PYBIND11_MODULE; let load_inline generate Python bindings.
-5. Keep the custom extension self-contained in this single Python file.
-6. Use load_inline(..., functions=[...]) to bind exported wrapper functions.
+2. If you use a custom CUDA extension, build it through StitchCUDA's managed
+   load_inline scaffold:
+   from stitchcuda.runtime import build_load_inline_extension
+3. Do not call torch.utils.cpp_extension.load directly.
+4. Prefer build_load_inline_extension(...) over direct load_inline(...) calls.
+   The verifier also patches raw load_inline calls, but the managed helper gives
+   clearer errors.
+5. Do not write PYBIND11_MODULE; let the scaffold/load_inline generate Python bindings.
+6. Put exported C++ wrapper definitions and CUDA kernels in cuda_sources. Put
+   only function declarations in cpp_sources, or omit cpp_sources and let the
+   scaffold infer declarations from cuda_sources.
+7. Use functions=["function_name"] with bare exported wrapper names, not full
+   C++ signatures.
 {target_line}
-8. Do not hardcode a CUDA architecture different from the target architecture
+8. Do not pass build_directory/name prefixes manually; the framework assigns a
+   unique extension name and build directory for every attempt.
+9. Do not hardcode a CUDA architecture different from the target architecture
    context. Prefer relying on the evaluator's configured TORCH_CUDA_ARCH_LIST
    unless a target-specific flag is explicitly required.
 """.strip()

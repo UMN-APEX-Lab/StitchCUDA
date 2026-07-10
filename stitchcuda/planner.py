@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 
 from .llm import OpenAIChatClient, parse_json_object
+from .schemas import PlanPayload
 from .templates import render_template
-from .types import CandidateAttempt, KernelBenchProblem, Plan
+from .types import KernelBenchProblem, Plan
 
 
 class PlannerAgent:
@@ -16,7 +17,7 @@ class PlannerAgent:
     def run(self, problem: KernelBenchProblem, *, hardware_summary: dict) -> Plan:
         prompt = render_template(
             "planner.md",
-            problem_json=json.dumps(problem.to_dict(), indent=2),
+            problem_json=json.dumps(_problem_metadata(problem), indent=2),
             hardware_json=json.dumps(hardware_summary, indent=2),
             reference_code=problem.reference_code,
         )
@@ -30,7 +31,8 @@ class PlannerAgent:
             ]
         )
         data = parse_json_object(raw)
-        return Plan.from_dict(data)
+        payload = PlanPayload.model_validate(data)
+        return Plan.from_dict(payload.model_dump())
 
     def replan(
         self,
@@ -38,15 +40,15 @@ class PlannerAgent:
         *,
         hardware_summary: dict,
         previous_plan: Plan,
-        attempts: list[CandidateAttempt],
+        attempt_memory_context: str,
         reason: str,
     ) -> Plan:
         prompt = render_template(
             "replanner.md",
-            problem_json=json.dumps(problem.to_dict(), indent=2),
+            problem_json=json.dumps(_problem_metadata(problem), indent=2),
             hardware_json=json.dumps(hardware_summary, indent=2),
             previous_plan_json=json.dumps(previous_plan.to_dict(), indent=2),
-            attempts_json=json.dumps([attempt.to_dict() for attempt in attempts], indent=2, default=str),
+            attempt_memory_context=attempt_memory_context,
             replan_reason=reason,
             reference_code=problem.reference_code,
         )
@@ -60,4 +62,11 @@ class PlannerAgent:
             ]
         )
         data = parse_json_object(raw)
-        return Plan.from_dict(data)
+        payload = PlanPayload.model_validate(data)
+        return Plan.from_dict(payload.model_dump())
+
+
+def _problem_metadata(problem: KernelBenchProblem) -> dict:
+    data = problem.to_dict()
+    data.pop("reference_code", None)
+    return data

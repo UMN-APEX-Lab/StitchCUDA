@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from openai import OpenAI
@@ -19,9 +19,22 @@ class LLMConfig:
     reasoning_effort: str = ""
 
 
+@dataclass
+class LLMCallMetadata:
+    response_id: str = ""
+    model: str = ""
+    finish_reason: str = ""
+    usage: dict[str, Any] = field(default_factory=dict)
+    content_chars: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 class OpenAIChatClient:
     def __init__(self, config: LLMConfig):
         self.config = config
+        self.last_metadata: LLMCallMetadata | None = None
         kwargs: dict[str, Any] = {}
         if config.api_base:
             kwargs["base_url"] = config.api_base
@@ -48,10 +61,23 @@ class OpenAIChatClient:
             kwargs["temperature"] = self.config.temperature
 
         response = self.client.chat.completions.create(timeout=self.config.timeout_s, **kwargs)
-        content = response.choices[0].message.content
+        choice = response.choices[0]
+        content = choice.message.content
         if content is None:
-            content = getattr(response.choices[0].message, "reasoning", None) or ""
+            content = getattr(choice.message, "reasoning", None) or ""
+        usage = getattr(response, "usage", None)
+        usage_dict = usage.model_dump() if hasattr(usage, "model_dump") else dict(usage or {})
+        self.last_metadata = LLMCallMetadata(
+            response_id=str(getattr(response, "id", "") or ""),
+            model=str(getattr(response, "model", "") or model),
+            finish_reason=str(getattr(choice, "finish_reason", "") or ""),
+            usage=usage_dict,
+            content_chars=len(content),
+        )
         return content
+
+    def last_metadata_dict(self) -> dict[str, Any]:
+        return self.last_metadata.to_dict() if self.last_metadata else {}
 
 
 def parse_json_object(text: str) -> dict[str, Any]:

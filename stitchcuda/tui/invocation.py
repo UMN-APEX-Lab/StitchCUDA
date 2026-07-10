@@ -18,6 +18,7 @@ from typing import Callable, List, Optional
 
 import typer
 
+from ..attempt_memory import DEFAULT_MEMORY_TOKEN_BUDGET
 from ..events import EventSink, NullSink
 from ..kernelbench import load_dataset_problems
 from ..workflow import FixedWorkflowConfig, StitchCUDAWorkflow
@@ -52,8 +53,9 @@ class RunInvocation:
     target_speedup: float = 1.0
     num_correct_trials: int = 5
     num_perf_trials: int = 10
-    measure_performance: bool = True
     verifier_timeout_s: int = 1800
+    coder_memory_tokens: int = DEFAULT_MEMORY_TOKEN_BUDGET
+    replanner_memory_tokens: int = DEFAULT_MEMORY_TOKEN_BUDGET
 
 
 # Fields excluded from saved profiles. Secrets and per-machine paths should
@@ -136,8 +138,9 @@ def _to_workflow_config(invocation: RunInvocation, problem_id: int, *, multi: bo
         target_speedup=invocation.target_speedup,
         num_correct_trials=invocation.num_correct_trials,
         num_perf_trials=invocation.num_perf_trials,
-        measure_performance=invocation.measure_performance,
         verifier_timeout_s=invocation.verifier_timeout_s,
+        coder_memory_tokens=invocation.coder_memory_tokens,
+        replanner_memory_tokens=invocation.replanner_memory_tokens,
     )
 
 

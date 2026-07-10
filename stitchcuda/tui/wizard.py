@@ -181,7 +181,8 @@ def _render_summary(invocation: RunInvocation, console: Console) -> None:
                 ("Target speedup", str(invocation.target_speedup)),
                 ("Correct trials", str(invocation.num_correct_trials)),
                 ("Perf trials", str(invocation.num_perf_trials)),
-                ("Measure perf", "yes" if invocation.measure_performance else "no"),
+                ("Coder memory", str(invocation.coder_memory_tokens)),
+                ("Replanner memory", str(invocation.replanner_memory_tokens)),
             ],
         ),
     )
@@ -389,8 +390,9 @@ def _edit_attempts(current: RunInvocation) -> RunInvocation | None:
             _Field("target_speedup", "Target speedup", "float"),
             _Field("num_correct_trials", "Correctness trials", "int"),
             _Field("num_perf_trials", "Performance trials", "int"),
-            _Field("measure_performance", "Measure performance", "bool"),
             _Field("verifier_timeout_s", "Verifier timeout seconds", "int"),
+            _Field("coder_memory_tokens", "Coder memory tokens", "int"),
+            _Field("replanner_memory_tokens", "Replanner memory tokens", "int"),
         ],
     )
 

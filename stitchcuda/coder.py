@@ -5,7 +5,7 @@ import json
 from .kernelbench import extract_solution_code
 from .llm import OpenAIChatClient
 from .templates import render_template
-from .types import KernelBenchProblem, Plan, VerificationResult
+from .types import KernelBenchProblem, Plan
 
 
 class CoderAgent:
@@ -47,8 +47,8 @@ class CoderAgent:
         *,
         kernelbench_prompt: str,
         plan: Plan,
-        previous_code: str,
-        verifier_result: VerificationResult,
+        baseline_code: str,
+        attempt_memory_context: str,
         hardware_summary: dict,
         target_speedup: float,
     ) -> str:
@@ -58,8 +58,8 @@ class CoderAgent:
             plan_json=json.dumps(plan.to_dict(), indent=2),
             hardware_json=json.dumps(hardware_summary, indent=2),
             target_arch_context=target_arch_context(hardware_summary),
-            previous_code=previous_code,
-            verifier_feedback=json.dumps(verifier_result.to_dict(), indent=2),
+            baseline_code=baseline_code,
+            attempt_memory_context=attempt_memory_context,
             target_speedup=target_speedup,
         )
         raw = self.llm.chat(

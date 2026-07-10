@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import math
 import os
@@ -10,7 +11,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .attempt_memory import DEFAULT_MEMORY_TOKEN_BUDGET, AttemptMemory
 from .coder import CoderAgent
+from .event_log import JsonlEventLog
 from .events import EventSink, NullSink
 from .kernelbench import build_kernelbench_prompt, load_problem
 from .llm import LLMConfig, OpenAIChatClient
@@ -43,8 +46,9 @@ class FixedWorkflowConfig:
     target_speedup: float = 1.0
     num_correct_trials: int = 5
     num_perf_trials: int = 10
-    measure_performance: bool = True
     verifier_timeout_s: int = 1800
+    coder_memory_tokens: int = DEFAULT_MEMORY_TOKEN_BUDGET
+    replanner_memory_tokens: int = DEFAULT_MEMORY_TOKEN_BUDGET
 
 
 class StitchCUDAWorkflow:
@@ -71,7 +75,6 @@ class StitchCUDAWorkflow:
             device=config.device,
             num_correct_trials=config.num_correct_trials,
             num_perf_trials=config.num_perf_trials,
-            measure_performance=config.measure_performance,
             timeout_s=config.verifier_timeout_s,
         )
 
@@ -90,6 +93,16 @@ class StitchCUDAWorkflow:
         _save_json(run_dir / "problem.json", problem.to_dict())
         _save_json(run_dir / "hardware.json", hardware)
         _save_json(run_dir / "config.json", config_snapshot)
+        event_log = JsonlEventLog(run_dir / "events.jsonl")
+        event_log.record(
+            "run_started",
+            level=cfg.level,
+            problem_id=cfg.problem_id,
+            problem_name=problem.name,
+            run_dir=str(run_dir),
+            hardware=hardware,
+            config=config_snapshot,
+        )
 
         self.events.on_run_start(
             level=cfg.level,
@@ -109,16 +122,28 @@ class StitchCUDAWorkflow:
             include_hardware=False,
         )
         (run_dir / "kernelbench_prompt.txt").write_text(kb_prompt, encoding="utf-8")
+        attempt_memory = AttemptMemory(
+            target_speedup=cfg.target_speedup,
+            coder_token_budget=cfg.coder_memory_tokens,
+            replanner_token_budget=cfg.replanner_memory_tokens,
+        )
 
         plan_version = 0
         self.events.on_plan_start(version=plan_version)
+        event_log.record("plan_started", version=plan_version)
         plan = self.planner.run(problem, hardware_summary=hardware)
         self.events.on_plan_done(version=plan_version, summary=plan.summary)
         _save_json(run_dir / f"plan_v{plan_version:02d}.json", plan.to_dict())
         _save_json(run_dir / "plan.json", plan.to_dict())
+        event_log.record(
+            "plan_finished",
+            version=plan_version,
+            summary=plan.summary,
+            llm=self.planner.llm.last_metadata_dict(),
+            plan_path=str(run_dir / f"plan_v{plan_version:02d}.json"),
+        )
 
         attempts: list[CandidateAttempt] = []
-        previous_code = ""
         previous_result = VerificationResult(error="no previous verifier result")
         best: CandidateAttempt | None = None
         replan_count = 0
@@ -127,8 +152,22 @@ class StitchCUDAWorkflow:
         for attempt_idx in range(max(1, cfg.max_attempts)):
             stage = "draft" if attempt_idx == 0 else _next_stage(previous_result, cfg.target_speedup)
             self.events.on_attempt_start(attempt=attempt_idx, stage=stage, plan_version=plan_version)
+            event_log.record(
+                "attempt_started",
+                attempt=attempt_idx,
+                stage=stage,
+                plan_version=plan_version,
+            )
 
+            coder_context = attempt_memory.context_for_coder() if attempt_idx > 0 else None
             self.events.on_code_start(attempt=attempt_idx)
+            event_log.record(
+                "code_started",
+                attempt=attempt_idx,
+                stage=stage,
+                plan_version=plan_version,
+                attempt_memory=coder_context.metadata() if coder_context is not None else None,
+            )
             if attempt_idx == 0:
                 code = self.coder.draft(
                     problem,
@@ -141,23 +180,43 @@ class StitchCUDAWorkflow:
                     problem,
                     kernelbench_prompt=kb_prompt,
                     plan=plan,
-                    previous_code=previous_code,
-                    verifier_result=previous_result,
+                    baseline_code=coder_context.baseline_code,
+                    attempt_memory_context=coder_context.text,
                     hardware_summary=hardware,
                     target_speedup=cfg.target_speedup,
                 )
+            code_hash = _sha256_text(code)
             self.events.on_code_done(attempt=attempt_idx, code_chars=len(code))
+            event_log.record(
+                "code_finished",
+                attempt=attempt_idx,
+                stage=stage,
+                plan_version=plan_version,
+                code_chars=len(code),
+                code_hash=code_hash,
+                llm=self.coder.llm.last_metadata_dict(),
+            )
 
             solution_path = run_dir / f"attempt_{attempt_idx:02d}_{stage}.py"
             solution_path.write_text(code, encoding="utf-8")
 
             self.events.on_verify_start(attempt=attempt_idx)
+            event_log.record(
+                "verify_started",
+                attempt=attempt_idx,
+                stage=stage,
+                plan_version=plan_version,
+                code_hash=code_hash,
+                solution_path=str(solution_path),
+            )
             result = self.verifier.verify(
                 problem,
                 code_path=solution_path,
                 output_dir=run_dir,
                 attempt=attempt_idx,
             )
+            if not result.code_hash:
+                result.code_hash = code_hash
 
             attempt = CandidateAttempt(
                 attempt=attempt_idx,
@@ -165,9 +224,21 @@ class StitchCUDAWorkflow:
                 stage=stage,
                 solution_path=solution_path,
                 result=result,
+                code_hash=result.code_hash,
             )
             attempts.append(attempt)
+            attempt_memory.record(attempt, code=code, plan=plan)
             _save_json(run_dir / f"attempt_{attempt_idx:02d}_summary.json", attempt.to_dict())
+            memory_snapshot = attempt_memory.to_dict()
+            _save_json(run_dir / "attempt_memory.json", memory_snapshot)
+            event_log.record(
+                "attempt_memory_updated",
+                attempt=attempt_idx,
+                latest_attempt=attempt_memory.latest_attempt,
+                best_correct_attempt=attempt_memory.best_correct_attempt,
+                error_fingerprint_count=len(memory_snapshot["error_fingerprints"]),
+                failed_strategy_count=len(memory_snapshot["failed_strategy_summaries"]),
+            )
 
             # Compute is_best *before* mutating ``best`` so the event reflects
             # the decision and downstream UI can flag the row immediately.
@@ -186,9 +257,19 @@ class StitchCUDAWorkflow:
                 error=result.error,
                 is_best=is_best,
             )
+            event_log.record(
+                "verify_finished",
+                attempt=attempt_idx,
+                stage=stage,
+                plan_version=plan_version,
+                code_hash=result.code_hash,
+                result=result.to_dict(),
+                is_best=is_best,
+            )
 
             if _meets_target(result, cfg.target_speedup):
                 stop_reason = "target_reached"
+                event_log.record("target_reached", attempt=attempt_idx, speedup=result.speedup)
                 break
 
             replan_reason = _replan_reason(
@@ -200,19 +281,33 @@ class StitchCUDAWorkflow:
             if replan_reason and replan_count < max(0, cfg.max_replans) and attempt_idx < max(1, cfg.max_attempts) - 1:
                 replan_count += 1
                 plan_version += 1
+                replanner_context = attempt_memory.context_for_replanner()
                 self.events.on_plan_start(version=plan_version, reason=replan_reason)
+                event_log.record(
+                    "plan_started",
+                    version=plan_version,
+                    reason=replan_reason,
+                    attempt_memory=replanner_context.metadata(),
+                )
                 plan = self.planner.replan(
                     problem,
                     hardware_summary=hardware,
                     previous_plan=plan,
-                    attempts=attempts,
+                    attempt_memory_context=replanner_context.text,
                     reason=replan_reason,
                 )
                 self.events.on_plan_done(version=plan_version, summary=plan.summary)
                 _save_json(run_dir / f"plan_v{plan_version:02d}.json", plan.to_dict())
                 _save_json(run_dir / "plan.json", plan.to_dict())
+                event_log.record(
+                    "plan_finished",
+                    version=plan_version,
+                    reason=replan_reason,
+                    summary=plan.summary,
+                    llm=self.planner.llm.last_metadata_dict(),
+                    plan_path=str(run_dir / f"plan_v{plan_version:02d}.json"),
+                )
 
-            previous_code = code
             previous_result = result
 
         summary = {
@@ -222,8 +317,16 @@ class StitchCUDAWorkflow:
             "replan_count": replan_count,
             "best_attempt": best.to_dict() if best else None,
             "attempts": [attempt.to_dict() for attempt in attempts],
+            "attempt_memory": attempt_memory.to_dict(),
         }
         _save_json(run_dir / "summary.json", summary)
+        event_log.record(
+            "run_finished",
+            stop_reason=stop_reason,
+            best_attempt=best.attempt if best else None,
+            best_speedup=best.result.speedup if best else 0.0,
+            summary_path=str(run_dir / "summary.json"),
+        )
         self.events.on_run_end(
             stop_reason=stop_reason,
             best_attempt=best.attempt if best else None,
@@ -275,6 +378,10 @@ class StitchCUDAWorkflow:
 
 
 def _next_stage(result: VerificationResult, target_speedup: float) -> str:
+    if result.error_kind == "static_forbidden":
+        return "repair_static"
+    if result.error_kind == "timeout":
+        return "repair_timeout"
     if not result.compiled:
         return "repair_compile"
     if not result.correct:
@@ -331,6 +438,10 @@ def _replan_reason(
 
 def _save_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _config_to_json(config: FixedWorkflowConfig) -> dict[str, Any]:

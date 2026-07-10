@@ -27,6 +27,7 @@ from typing import Any, List, Optional
 import click
 import typer
 
+from ..attempt_memory import DEFAULT_MEMORY_TOKEN_BUDGET
 from ..events import EventSink
 from ..kernelbench import default_kernelbench_root
 from . import profile as profile_io
@@ -109,8 +110,19 @@ def register(app: typer.Typer) -> None:
         target_speedup: float = typer.Option(1.0, "--target-speedup"),
         num_correct_trials: int = typer.Option(5, "--num-correct-trials"),
         num_perf_trials: int = typer.Option(10, "--num-perf-trials"),
-        no_performance: bool = typer.Option(False, "--no-performance", help="Skip performance measurement."),
         verifier_timeout_s: int = typer.Option(1800, "--verifier-timeout-s"),
+        coder_memory_tokens: int = typer.Option(
+            DEFAULT_MEMORY_TOKEN_BUDGET,
+            "--coder-memory-tokens",
+            min=256,
+            help="Attempt-memory token budget for coder repair context.",
+        ),
+        replanner_memory_tokens: int = typer.Option(
+            DEFAULT_MEMORY_TOKEN_BUDGET,
+            "--replanner-memory-tokens",
+            min=256,
+            help="Attempt-memory token budget for replanning context.",
+        ),
         no_live: bool = typer.Option(
             False,
             "--no-live",
@@ -147,8 +159,9 @@ def register(app: typer.Typer) -> None:
                     target_speedup=target_speedup,
                     num_correct_trials=num_correct_trials,
                     num_perf_trials=num_perf_trials,
-                    no_performance=no_performance,
                     verifier_timeout_s=verifier_timeout_s,
+                    coder_memory_tokens=coder_memory_tokens,
+                    replanner_memory_tokens=replanner_memory_tokens,
                 ),
             )
 
@@ -218,8 +231,9 @@ def _build_from_flags(ctx: typer.Context, *, profile_name: str, cli: dict[str, A
         target_speedup=_merge(ctx, profile_data, cli, "target_speedup"),
         num_correct_trials=_merge(ctx, profile_data, cli, "num_correct_trials"),
         num_perf_trials=_merge(ctx, profile_data, cli, "num_perf_trials"),
-        measure_performance=_resolve_measure_performance(ctx, profile_data, cli["no_performance"]),
         verifier_timeout_s=_merge(ctx, profile_data, cli, "verifier_timeout_s"),
+        coder_memory_tokens=_merge(ctx, profile_data, cli, "coder_memory_tokens"),
+        replanner_memory_tokens=_merge(ctx, profile_data, cli, "replanner_memory_tokens"),
     )
 
 
@@ -231,16 +245,6 @@ def _merge(ctx: typer.Context, profile_data: dict, cli: dict[str, Any], typer_na
     if profile_key in profile_data:
         return profile_data[profile_key]
     return cli[typer_name]
-
-
-def _resolve_measure_performance(ctx: typer.Context, profile_data: dict, no_performance_cli: bool) -> bool:
-    # The CLI flag is inverted (--no-performance) but the profile / invocation
-    # field is positive (measure_performance). Map carefully across both surfaces.
-    if _was_explicit(ctx, "no_performance"):
-        return not no_performance_cli
-    if "measure_performance" in profile_data:
-        return bool(profile_data["measure_performance"])
-    return not no_performance_cli  # CLI default = False, so measure = True
 
 
 def _resolve_problem_ids(

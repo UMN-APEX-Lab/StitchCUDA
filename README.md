@@ -23,12 +23,16 @@ optimization, and replanning.
 ```text
 stitchcuda/                 Python package
   cli.py                    Command-line entry point
+  attempt_memory.py         Budgeted coder/replanner attempt context
   events.py                 Workflow event sink protocol for live/quiet UIs
+  event_log.py              Append-only JSONL workflow event ledger
   workflow.py               Fixed planner-coder-verifier loop and replan logic
   planner.py                Initial planning and replanning agents
   coder.py                  Candidate generation and repair agent
   verifier.py               Isolated KernelBench evaluator
   kernelbench.py            KernelBench adapter and prompt construction
+  runtime.py                Framework-managed CUDA extension scaffold
+  schemas.py                Validated structured LLM output schemas
   tui/                      Typer/Rich terminal frontend and run browser
 prompts/                    Editable prompt templates
 third_party/KernelBench/    KernelBench git submodule
@@ -82,6 +86,18 @@ pip install -e third_party/KernelBench
 Install a CUDA-enabled PyTorch build if your environment does not already have
 one. Follow the official PyTorch installation matrix for your CUDA toolkit and
 driver.
+
+Conda environments work as well. StitchCUDA does not switch Python
+environments internally: verifier workers use the same interpreter that
+launched the main process. Activate the intended environment before installing
+or running the package. For example, when using an existing environment named
+`cf`:
+
+```bash
+conda activate cf
+python -m pip install -e .
+python -m pip install -e third_party/KernelBench
+```
 
 For a hosted OpenAI-compatible endpoint:
 
@@ -199,8 +215,8 @@ The current workflow is deterministic:
    produce a structured optimization plan.
 2. **Code**: generate a full KernelBench-compatible Python solution defining
    `ModelNew`.
-3. **Verify**: run KernelBench correctness and performance evaluation in a fresh
-   Python subprocess to avoid CUDA context poisoning after failures.
+3. **Verify**: run KernelBench correctness and mandatory performance evaluation
+   in a fresh Python subprocess to avoid CUDA context poisoning after failures.
 4. **Repair or optimize**: if the candidate fails or misses the target speedup,
    return verifier feedback to the coder.
 5. **Replan**: if failures repeat or correct candidates stagnate below the
@@ -216,9 +232,51 @@ Useful controls:
 --target-speedup
 --num-correct-trials
 --num-perf-trials
---no-performance
 --verifier-timeout-s
+--coder-memory-tokens
+--replanner-memory-tokens
 ```
+
+Performance evaluation is always enabled after a candidate passes the earlier
+validation stages. There is no option to disable it; `--num-perf-trials`
+controls the number of timing trials.
+
+Attempt history is maintained as structured memory rather than an ever-growing
+chat transcript. The coder receives the best correct candidate when one exists,
+the latest outcome, recurring error fingerprints, and recent failed strategy
+summaries. The replanner receives a broader compressed timeline and aggregated
+failure clusters without full candidate source. The two views have independent
+token budgets controlled by `--coder-memory-tokens` and
+`--replanner-memory-tokens`. Both default to `65536`, matching the default LLM
+completion-token budget. Complete selected baseline code is treated as pinned
+context and is never truncated.
+
+## Managed CUDA Extensions
+
+Generated solutions should build inline CUDA extensions through StitchCUDA's
+framework-owned scaffold:
+
+```python
+from stitchcuda.runtime import build_load_inline_extension
+
+extension = build_load_inline_extension(
+    name="fused_kernel",
+    cuda_sources=cuda_source,
+    functions=["fused_forward"],
+)
+```
+
+Put CUDA kernels and wrapper definitions in `cuda_sources`. The `functions`
+list contains bare exported wrapper names; StitchCUDA can infer matching C++
+declarations when `cpp_sources` is omitted. Generated code must not provide a
+custom `build_directory`, module-name prefix, `PYBIND11_MODULE`, or call
+`torch.utils.cpp_extension.load`.
+
+The verifier also intercepts direct `load_inline` calls for compatibility. For
+every attempt it derives a unique extension prefix and build root from the
+attempt number and candidate code hash. This prevents stale binaries and
+concurrent candidates from sharing a module or compiler cache while preserving
+all build artifacts for diagnosis.
 
 ## Outputs
 
@@ -232,11 +290,17 @@ Important files:
 
 - `config.json`: redacted run configuration.
 - `hardware.json`: detected GPU name, compute capability, target SM, and driver.
+- `events.jsonl`: append-only workflow ledger with LLM metadata, code hashes,
+  verifier outcomes, and run lifecycle events.
 - `kernelbench_prompt.txt`: KernelBench prompt plus StitchCUDA constraints.
 - `plan_vXX.json`: planner outputs, including replans.
 - `attempt_XX_<stage>.py`: generated candidate solution.
 - `attempt_XX_verifier.json`: raw verifier result.
 - `attempt_XX_summary.json`: candidate result plus workflow metadata.
+- `attempt_memory.json`: latest compressed-memory state, error fingerprints,
+  failed strategy summaries, and best/latest candidate references.
+- `torch_extensions/attempt_XX_<code_hash>/`: isolated extension build root for
+  each candidate attempt.
 - `best_solution.py`: best correct candidate, if any.
 - `summary.json`: final run summary.
 

@@ -48,10 +48,13 @@ class VerificationResult:
     speedup: float = 0.0
     runtime_us: float = -1.0
     ref_runtime_us: float = -1.0
+    error_kind: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     error: str = ""
+    warnings: list[str] = field(default_factory=list)
     stdout_tail: str = ""
     stderr_tail: str = ""
+    code_hash: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "VerificationResult":
@@ -61,10 +64,13 @@ class VerificationResult:
             speedup=float(data.get("speedup", 0.0) or 0.0),
             runtime_us=float(data.get("runtime_us", -1.0) or -1.0),
             ref_runtime_us=float(data.get("ref_runtime_us", -1.0) or -1.0),
+            error_kind=str(data.get("error_kind", "") or ""),
             metadata=dict(data.get("metadata") or {}),
             error=str(data.get("error", "") or ""),
+            warnings=_string_list(data.get("warnings")),
             stdout_tail=str(data.get("stdout_tail", "") or ""),
             stderr_tail=str(data.get("stderr_tail", "") or ""),
+            code_hash=str(data.get("code_hash", "") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -78,6 +84,7 @@ class CandidateAttempt:
     stage: str
     solution_path: Path
     result: VerificationResult
+    code_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
