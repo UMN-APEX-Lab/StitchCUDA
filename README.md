@@ -317,11 +317,13 @@ name, and KernelBench task metadata is injected by the workflow.
 ## Citation
 
 ```bibtex
-@inproceedings{li2026stitchcuda,
-  title     = {StitchCUDA: An Automated Multi-Agents End-to-End GPU Programming Framework with Rubric-based Agentic Reinforcement Learning},
-  author    = {Li, Shiyang and Zhang, Zijian and Chen, Winson and Luo, Yuebo and Hong, Mingyi and Ding, Caiwen},
-  booktitle = {International Conference on Machine Learning (ICML)},
-  year      = {2026}
+@inproceedings{
+li2026stitchcuda,
+title={Stitch{CUDA}: An Automated Multi-Agents End-to-End {GPU} Programing Framework with Rubric-based Agentic Reinforcement Learning},
+author={Shiyang Li and Zijian Zhang and Winson Chen and Yuebo Luo and Mingyi Hong and Caiwen Ding},
+booktitle={Forty-third International Conference on Machine Learning},
+year={2026},
+url={https://openreview.net/forum?id=Id4iwq3dnF}
 }
 ```
 
