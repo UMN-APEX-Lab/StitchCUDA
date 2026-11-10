@@ -278,6 +278,8 @@ def _to_result(p: dict[str, Any], code_hash: str) -> VerificationResult:
         kind, compiled = "static_forbidden", False
     elif not compiled:
         kind = "compile_error"
+    elif "timed out" in msg.lower():
+        kind = "timeout"
     elif not p.get("correct"):
         kind = "correctness_error"
     elif not correct:
