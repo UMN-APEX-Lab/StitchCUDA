@@ -359,6 +359,16 @@ class V2InfraTests(unittest.TestCase):
         self.assertEqual(memory_snapshot["latest"]["attempt"], 2)
         self.assertEqual(memory_snapshot["best_correct"]["attempt"], 2)
 
+    def test_diagnostic_keeps_ratios_and_hides_paths(self) -> None:
+        from stitchcuda.attempt_memory import _normalize_diagnostic
+
+        text = _normalize_diagnostic("max|err|/rms = 1.2e+37, rel_fro_err = 3; see /tmp/run/a/solution.h:12:3 and '/home/u/x.cu'")
+        self.assertIn("max|err|/rms = 1.2e+37", text)
+        self.assertNotIn("/tmp/run", text)
+        self.assertNotIn("/home/u", text)
+        self.assertIn("<path>", text)
+        self.assertIn("<path>(33): error", _normalize_diagnostic("/tmp/run/a/solution.h(33): error: x"))
+
     def test_workflow_has_no_early_stop(self) -> None:
         problem = KernelBenchProblem(level=1, problem_id=1, name="no_early_stop", reference_code="class Model:\n    pass")
         verifier = _FakeVerifier(

@@ -410,7 +410,9 @@ def _normalize_diagnostic(text: str) -> str:
     text = re.sub(r"stitchcuda_a\d+_[0-9a-f]+", "stitchcuda_<attempt>_<hash>", text)
     text = re.sub(r"\b[0-9a-f]{12,64}\b", "<hash>", text, flags=re.IGNORECASE)
     text = re.sub(r":\d+:\d+(?::|\b)", ":<line>:<col>", text)
-    text = re.sub(r"(?<![\w.])/(?:[^\s:'\"]+/)*[^\s:'\"]+", "<path>", text)
+    # Absolute paths only: at least two components, starting the text or after whitespace, a quote,
+    # "(" or "=". Ratios such as "max|err|/rms" are kept.
+    text = re.sub(r"(?<![^\s'\"(=])/(?:[^\s:'\"/]+/)+[^\s:'\"(]*", "<path>", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
