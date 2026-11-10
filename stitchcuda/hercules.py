@@ -198,6 +198,7 @@ class HackingAuditor:
             verdict = {"verdict": "audit_error", "error": f"{exc.__class__.__name__}: {exc}"}
         verdict.setdefault("verdict", "parse_error")
         verdict["judge_model"] = self.llm.config.model
+        verdict["llm"] = self.llm.last_metadata_dict()
         verdict["audited_solution"] = solution.name
         verdict["audited_at"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         return verdict
@@ -405,6 +406,19 @@ def run_task(problem: HerculesProblem, args, file_env: dict[str, str], out_root:
         "in_loop_best_speedup": best["result"]["speedup"] if best else 0.0,
         "wall_s": round(wall_s, 1), **_llm_usage(task_dir),
     }
+    extra = {"audit": [0, 0, 0], "ncu_analysis": [0, 0, 0]}
+    for att in summary.get("attempts") or []:
+        md = (att.get("result") or {}).get("metadata") or {}
+        for key, src in (("audit", (md.get("audit_verdict") or {}).get("llm")), ("ncu_analysis", (md.get("ncu") or {}).get("llm"))):
+            u = (src or {}).get("usage") or {}
+            if u:
+                extra[key][0] += 1
+                extra[key][1] += int(u.get("prompt_tokens") or 0)
+                extra[key][2] += int(u.get("completion_tokens") or 0)
+    for key, (n, pt, ct) in extra.items():
+        result[f"{key}_calls"], result[f"{key}_prompt_tokens"], result[f"{key}_completion_tokens"] = n, pt, ct
+        result["prompt_tokens"] += pt
+        result["completion_tokens"] += ct
     final_status, final_speedup = "FAIL", 0.0
     if best and not args.no_final_reeval:
         # Clean re-evaluation (fresh process) of the in-loop best: this is the task's score.
