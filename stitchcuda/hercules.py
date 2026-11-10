@@ -294,6 +294,10 @@ def _to_result(p: dict[str, Any], code_hash: str) -> VerificationResult:
             parts.append("correctness detail: " + json.dumps(detail, default=str)[:3000])
         error = _clip("\n".join(x for x in parts if x) or f"status {status}")
     lat, ref = p.get("latency_ms"), p.get("ref_latency_ms")
+    sizes = [x for x in (p.get("per_size") or []) if isinstance(x, dict)]
+    if not lat and sizes:  # Class 1 reports per-size minima only: use their sum over the sizes
+        lat = sum(float(x.get("kernel_min_ms") or 0.0) for x in sizes) or None
+        ref = sum(float(x.get("ref_min_ms") or 0.0) for x in sizes) or None
     return VerificationResult(
         compiled=compiled, correct=correct, speedup=float(p.get("speedup") or 0.0) if correct else 0.0,
         runtime_us=lat * 1000.0 if lat else -1.0, ref_runtime_us=ref * 1000.0 if ref else -1.0,
