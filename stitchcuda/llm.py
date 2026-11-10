@@ -23,7 +23,7 @@ class LLMConfig:
     api_key: str = ""
     temperature: float = 0.7
     max_tokens: int = 65536
-    timeout_s: float = 600.0
+    timeout_s: float = 3600.0  # long non-streamed generations (up to 64K tokens) take well over 10 min
     reasoning_effort: str = ""
     max_retries: int = 8
 
