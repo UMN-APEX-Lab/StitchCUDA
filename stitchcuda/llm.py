@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+import openai
 from openai import OpenAI
+
+# Transient API failures (rate limits, timeouts, dropped connections, 5xx) are retried with
+# exponential backoff instead of aborting the whole run.
+_RETRYABLE = (openai.RateLimitError, openai.APITimeoutError, openai.APIConnectionError,
+              openai.InternalServerError)
 
 
 @dataclass
@@ -17,6 +25,7 @@ class LLMConfig:
     max_tokens: int = 65536
     timeout_s: float = 600.0
     reasoning_effort: str = ""
+    max_retries: int = 8
 
 
 @dataclass
@@ -60,7 +69,7 @@ class OpenAIChatClient:
             kwargs["max_tokens"] = self.config.max_tokens
             kwargs["temperature"] = self.config.temperature
 
-        response = self.client.chat.completions.create(timeout=self.config.timeout_s, **kwargs)
+        response = self._create(kwargs)
         choice = response.choices[0]
         content = choice.message.content
         if content is None:
@@ -75,6 +84,26 @@ class OpenAIChatClient:
             content_chars=len(content),
         )
         return content
+
+    def _create(self, kwargs: dict[str, Any]):
+        delay = 5.0
+        for attempt in range(self.config.max_retries + 1):
+            if getattr(self, "_drop_temperature", False):
+                kwargs.pop("temperature", None)
+            try:
+                return self.client.chat.completions.create(timeout=self.config.timeout_s, **kwargs)
+            except openai.BadRequestError as exc:
+                # Reasoning model families accept only their default temperature.
+                if "temperature" in kwargs and "temperature" in str(exc).lower() and not getattr(self, "_drop_temperature", False):
+                    self._drop_temperature = True
+                    continue
+                raise
+            except _RETRYABLE:
+                if attempt >= self.config.max_retries:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 2, 300.0)
+        raise RuntimeError("unreachable")
 
     def last_metadata_dict(self) -> dict[str, Any]:
         return self.last_metadata.to_dict() if self.last_metadata else {}
@@ -121,4 +150,5 @@ def _normalize_model_name(model: str) -> str:
 
 def _uses_max_completion_tokens(model: str, reasoning_effort: str) -> bool:
     lowered = model.lower()
-    return bool(reasoning_effort) or lowered.startswith(("gpt-5", "gpt5", "o1", "o3", "o4"))
+    # GPT-5 and later families (gpt-5*, gpt-6*, ...) and the o-series take max_completion_tokens.
+    return bool(reasoning_effort) or bool(re.match(r"(gpt-?(?:[5-9]|\d{2,})|o\d)", lowered))

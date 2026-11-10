@@ -213,6 +213,11 @@ class AttemptMemory:
             ),
             f"Latest outcome: {_attempt_line(latest, self.target_speedup)}",
         ]
+        if baseline.result.suggestions:
+            lines.append(
+                f"Verifier's profiler-based improvement suggestions for the selected baseline "
+                f"(attempt {baseline.attempt}):\n{baseline.result.suggestions}"
+            )
         if baseline.attempt != latest.attempt:
             lines.append(
                 f"The latest attempt {latest.attempt} regressed from the selected correct baseline; "
@@ -268,6 +273,9 @@ class AttemptMemory:
                     f"speedup={self._best_correct.result.speedup:.4f}x, "
                     f"code_hash={_short_code_hash(self._best_correct.code_hash)}."
                 )
+                if self._best_correct.result.suggestions:
+                    lines.append("Verifier's profiler-based improvement suggestions for the best correct "
+                                 f"candidate:\n{self._best_correct.result.suggestions}")
 
             clusters = self._ranked_error_clusters()
             if clusters:

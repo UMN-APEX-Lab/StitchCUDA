@@ -80,16 +80,13 @@ class StitchCUDAWorkflow:
 
     def run(self) -> dict[str, Any]:
         cfg = self.config
-        problem = load_problem(
-            level=cfg.level,
-            problem_id=cfg.problem_id,
-            kernelbench_root=cfg.kernelbench_root,
-        )
+        problem = self._load_problem()
         run_dir = self._create_run_dir(problem)
         hardware = self._hardware_summary()
         config_snapshot = _config_to_json(cfg)
 
-        (run_dir / "reference.py").write_text(problem.reference_code, encoding="utf-8")
+        if problem.reference_code:
+            (run_dir / "reference.py").write_text(problem.reference_code, encoding="utf-8")
         _save_json(run_dir / "problem.json", problem.to_dict())
         _save_json(run_dir / "hardware.json", hardware)
         _save_json(run_dir / "config.json", config_snapshot)
@@ -113,15 +110,8 @@ class StitchCUDAWorkflow:
             config=config_snapshot,
         )
 
-        kb_prompt = build_kernelbench_prompt(
-            problem.reference_code,
-            prompt_option=cfg.prompt_option,
-            kernelbench_root=cfg.kernelbench_root,
-            gpu_name=str(hardware.get("gpu_name", "")),
-            target_arch_context=_target_arch_context(hardware),
-            include_hardware=False,
-        )
-        (run_dir / "kernelbench_prompt.txt").write_text(kb_prompt, encoding="utf-8")
+        kb_prompt = self._build_task_prompt(problem, hardware)
+        (run_dir / self.task_prompt_filename).write_text(kb_prompt, encoding="utf-8")
         attempt_memory = AttemptMemory(
             target_speedup=cfg.target_speedup,
             coder_token_budget=cfg.coder_memory_tokens,
@@ -197,7 +187,7 @@ class StitchCUDAWorkflow:
                 llm=self.coder.llm.last_metadata_dict(),
             )
 
-            solution_path = run_dir / f"attempt_{attempt_idx:02d}_{stage}.py"
+            solution_path = run_dir / f"attempt_{attempt_idx:02d}_{stage}{self.solution_suffix}"
             solution_path.write_text(code, encoding="utf-8")
 
             self.events.on_verify_start(attempt=attempt_idx)
@@ -245,7 +235,7 @@ class StitchCUDAWorkflow:
             is_best = result.correct and (best is None or result.speedup > best.result.speedup)
             if is_best:
                 best = attempt
-                shutil.copy2(solution_path, run_dir / "best_solution.py")
+                shutil.copy2(solution_path, run_dir / f"best_solution{self.solution_suffix}")
 
             self.events.on_verify_done(
                 attempt=attempt_idx,
@@ -268,9 +258,8 @@ class StitchCUDAWorkflow:
             )
 
             if _meets_target(result, cfg.target_speedup):
-                stop_reason = "target_reached"
+                # Recorded only: there is no early stop, the loop uses the whole attempt budget.
                 event_log.record("target_reached", attempt=attempt_idx, speedup=result.speedup)
-                break
 
             replan_reason = _replan_reason(
                 attempts,
@@ -334,10 +323,32 @@ class StitchCUDAWorkflow:
         )
         return summary
 
+    # -- benchmark hooks (KernelBench by default; see stitchcuda/hercules.py for CUDA-Hercules) --
+    task_prompt_filename = "kernelbench_prompt.txt"
+    solution_suffix = ".py"
+
+    def _load_problem(self):
+        cfg = self.config
+        return load_problem(level=cfg.level, problem_id=cfg.problem_id, kernelbench_root=cfg.kernelbench_root)
+
+    def _build_task_prompt(self, problem, hardware: dict[str, Any]) -> str:
+        cfg = self.config
+        return build_kernelbench_prompt(
+            problem.reference_code,
+            prompt_option=cfg.prompt_option,
+            kernelbench_root=cfg.kernelbench_root,
+            gpu_name=str(hardware.get("gpu_name", "")),
+            target_arch_context=_target_arch_context(hardware),
+            include_hardware=False,
+        )
+
+    def _default_run_name(self, problem, stamp: str) -> str:
+        return f"stitchcuda_L{problem.level}_P{problem.problem_id}_{stamp}"
+
     def _create_run_dir(self, problem: KernelBenchProblem) -> Path:
         root = Path(self.config.output_root).expanduser().resolve()
         stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        name = self.config.run_name or f"stitchcuda_L{problem.level}_P{problem.problem_id}_{stamp}"
+        name = self.config.run_name or self._default_run_name(problem, stamp)
         run_dir = root / _slug(name)
         run_dir.mkdir(parents=True, exist_ok=False)
         return run_dir
@@ -415,7 +426,7 @@ def _replan_reason(
     if len(recent_failures) == failed_threshold and all(not item.result.compiled for item in recent_failures):
         return (
             f"last {failed_threshold} attempts failed to compile; current implementation plan is not producing "
-            "valid KernelBench code"
+            "valid code for the task"
         )
     if len(recent_failures) == failed_threshold and all(item.result.compiled and not item.result.correct for item in recent_failures):
         return (

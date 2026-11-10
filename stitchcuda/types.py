@@ -55,6 +55,7 @@ class VerificationResult:
     stdout_tail: str = ""
     stderr_tail: str = ""
     code_hash: str = ""
+    suggestions: str = ""   # verifier's profiler-based next-step suggestions (correct candidates only)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "VerificationResult":
@@ -71,6 +72,7 @@ class VerificationResult:
             stdout_tail=str(data.get("stdout_tail", "") or ""),
             stderr_tail=str(data.get("stderr_tail", "") or ""),
             code_hash=str(data.get("code_hash", "") or ""),
+            suggestions=str(data.get("suggestions", "") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:

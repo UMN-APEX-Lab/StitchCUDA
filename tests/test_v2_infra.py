@@ -355,9 +355,40 @@ class V2InfraTests(unittest.TestCase):
             )
 
         self.assertEqual(coder.baselines, ["CODE_0_CORRECT", "CODE_0_CORRECT"])
-        self.assertEqual(summary["stop_reason"], "target_reached")
+        self.assertEqual(summary["stop_reason"], "max_attempts_reached")
         self.assertEqual(memory_snapshot["latest"]["attempt"], 2)
         self.assertEqual(memory_snapshot["best_correct"]["attempt"], 2)
+
+    def test_workflow_has_no_early_stop(self) -> None:
+        problem = KernelBenchProblem(level=1, problem_id=1, name="no_early_stop", reference_code="class Model:\n    pass")
+        verifier = _FakeVerifier(
+            [
+                VerificationResult(compiled=True, correct=True, speedup=3.0),
+                VerificationResult(compiled=True, correct=True, speedup=1.0),
+                VerificationResult(compiled=True, correct=True, speedup=1.5),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = object.__new__(StitchCUDAWorkflow)
+            workflow.config = FixedWorkflowConfig(
+                level=1, problem_id=1, model="fake", output_root=tmp, run_name="no_early_stop",
+                max_attempts=3, max_replans=0, target_speedup=1.0,
+            )
+            workflow.events = NullSink()
+            workflow.planner = _FakePlanner()
+            workflow.coder = _FakeCoder()
+            workflow.verifier = verifier
+            workflow._hardware_summary = lambda: {"gpu_name": "test"}
+            with (
+                patch("stitchcuda.workflow.load_problem", return_value=problem),
+                patch("stitchcuda.workflow.build_kernelbench_prompt", return_value="KB_PROMPT"),
+            ):
+                summary = workflow.run()
+
+        # The target is met at attempt 0, but the whole attempt budget is still used.
+        self.assertEqual(len(summary["attempts"]), 3)
+        self.assertEqual(summary["stop_reason"], "max_attempts_reached")
+        self.assertEqual(summary["best_attempt"]["attempt"], 0)
 
 
 def _candidate(attempt: int, result: VerificationResult, *, code_hash: str) -> CandidateAttempt:
