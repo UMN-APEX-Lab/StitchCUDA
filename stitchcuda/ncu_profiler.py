@@ -11,8 +11,9 @@ SourceCounters, with -lineinfo), Recipe 3 (details page with the rule engine's e
 speedups), per-line stall hotspots via the skill's extract_stall_hotspots.py helper, and the
 skill's golden rule / analysis dimensions / diagnosis playbook as the analysis prompt.
 
-Class 1 only for now: the task harness is rebuilt with -lineinfo in a temp copy and run with
-KH_WARMUP=0 KH_ITERS=1; only kernels defined in the candidate's source are profiled.
+Class 1: the task harness is rebuilt with -lineinfo in a temp copy and run with KH_WARMUP=0 KH_ITERS=1.
+Class 2: a small driver compiles the candidate like the evaluator (plus -lineinfo) and calls it once on one
+input set. In both cases only kernels defined in the candidate's source are profiled.
 """
 
 from __future__ import annotations
@@ -89,6 +90,57 @@ sys.stdout.write("__NCU_JSON__" + json.dumps(res) + "\n")
 """
 
 
+# Class 2: the candidate is a pybind11-wrapped extension. A small driver compiles it the way the evaluator
+# does (plus -lineinfo), builds one input set with the task's get_inputs and calls it once; the driver is run
+# once without ncu (compile + sanity run) and then under ncu, where the cached build is reused.
+_DRIVER_C2 = r"""
+import os, sys, torch
+ROOT, TASK_DIR, SOL, BUILD = {root!r}, {task_dir!r}, {sol!r}, {build!r}
+sys.path.insert(0, os.path.join(ROOT, "src"))
+from cuda_hercules.eval import (load_task_def, _build_call_args, get_solution_include_dirs,
+                                get_solution_cuda_flags, _get_device_sm)
+from cuda_hercules.compiler import compile_cuda_module
+td = load_task_def(TASK_DIR)
+os.makedirs(BUILD, exist_ok=True)
+fn = compile_cuda_module(cuda_source=SOL, function_signature=td["FUNCTION_SIGNATURE"],
+                         extra_include_dirs=get_solution_include_dirs(ROOT) or None,
+                         extra_cuda_cflags=get_solution_cuda_flags(td, _get_device_sm()) + ["-lineinfo"],
+                         interpose_cached_allocators=True, build_dir=BUILD, verbose=False)
+torch.manual_seed(42); torch.cuda.manual_seed(42)
+inputs = td["get_inputs"](); outs = td["get_outputs"](inputs)
+fn(*_build_call_args(td, inputs, outs)); torch.cuda.synchronize()
+print("__DRIVER_OK__")
+"""
+
+_CHILD_C2 = r"""
+import json, os, subprocess, sys
+out = {out!r}; ncu = {ncu!r}; regex = {regex!r}; count = {count!r}
+drv = os.path.join(out, "driver.py")
+open(drv, "w").write({driver!r})
+res = {{"ok": False}}
+try:
+    p = subprocess.run([sys.executable, drv], capture_output=True, text=True, timeout={timeout!r})
+    if "__DRIVER_OK__" not in p.stdout:
+        raise RuntimeError("driver failed: " + (p.stderr or p.stdout)[-1500:])
+    logs = {{}}
+    for tag, sel in (("full", ["--set", "full", "--section", "PmSampling", "--section", "PmSampling_WarpStates"]),
+                     ("source", ["--set", "source", "--section", "SourceCounters"])):
+        cmd = [ncu, *sel, "-k", "regex:" + regex, "-c", str(count), "-f", "-o", os.path.join(out, tag), sys.executable, drv]
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout={timeout!r})
+        logs[tag] = (p.stdout[-3000:] + p.stderr[-3000:])
+    open(os.path.join(out, "ncu_log.txt"), "w").write(json.dumps(logs, indent=1))
+    rep = os.path.join(out, "full.ncu-rep")
+    if not os.path.isfile(rep):
+        raise RuntimeError("ncu produced no report (no matching kernel launch?): " + logs.get("full", "")[-800:])
+    p = subprocess.run([ncu, "--import", rep, "--page", "details"], capture_output=True, text=True, timeout=600)
+    open(os.path.join(out, "details.txt"), "w").write(p.stdout)
+    res = {{"ok": True}}
+except Exception as e:
+    res = {{"ok": False, "error": f"{{type(e).__name__}}: {{e}}"}}
+sys.stdout.write("__NCU_JSON__" + json.dumps(res) + "\n")
+"""
+
+
 def kernel_names(code: str) -> list[str]:
     names = []
     for m in _KERNEL_RE.finditer(code):
@@ -122,16 +174,22 @@ class NcuProfiler:
             for f in ("SKILL.md", "reference/05-analysis-dimensions.md", "reference/06-diagnosis-playbook.md"))
 
     def profile(self, problem, code_path: Path, out_dir: Path, result) -> dict[str, Any]:
-        if problem.level != 1:
-            return {"skipped": "ncu profiling is implemented for Class 1 tasks only"}
+        if problem.level not in (1, 2):
+            return {"skipped": "ncu profiling is implemented for Class 1 and Class 2 tasks only"}
         code = code_path.read_text(encoding="utf-8", errors="replace")
         names = kernel_names(code)[:MAX_KERNELS]
         if not names:
             return {"skipped": "no __global__ kernel found in the candidate"}
         out_dir.mkdir(parents=True, exist_ok=True)
         regex = "^(?:" + "|".join(names) + ")$"
-        script = _CHILD.format(root=self.root, out=str(out_dir), ncu=self.ncu, regex=regex, count=len(names),
-                               task_id=problem.problem_id, sol=str(code_path), timeout=self.timeout_s)
+        if problem.level == 1:
+            script = _CHILD.format(root=self.root, out=str(out_dir), ncu=self.ncu, regex=regex, count=len(names),
+                                   task_id=problem.problem_id, sol=str(code_path), timeout=self.timeout_s)
+        else:
+            driver = _DRIVER_C2.format(root=self.root, task_dir=problem.task_dir, sol=str(code_path),
+                                       build=str(out_dir / "build"))
+            script = _CHILD_C2.format(out=str(out_dir), ncu=self.ncu, regex=regex, count=len(names), driver=driver,
+                                      timeout=self.timeout_s)
         env = dict(os.environ)
         if self.device is not None:
             env["CUDA_VISIBLE_DEVICES"] = str(self.device)
